@@ -678,9 +678,7 @@ fun Home(user: FirebaseUser) {
                 toast("Tersimpan di folder Download")
             }.onFailure { toast("Export gagal") }
         }) { Text("Export semua produk ke file Excel (.csv)?") }
-        "logout" -> Dlg("Log out", close, "Keluar", "Batal", { close(); gClient(ctx).signOut(); auth.signOut() }) { Text(if (pending || stuck) "⚠ Ada data yang belum terkirim ke server. Jika keluar atau uninstall sekarang, data itu bisa hilang. Jalankan Sinkronisasi dulu.
-
-Tetap keluar?" else "Yakin ingin keluar?") }
+        "logout" -> Dlg("Log out", close, "Keluar", "Batal", { close(); gClient(ctx).signOut(); auth.signOut() }) { Text(if (pending || stuck) "⚠ Ada data yang belum terkirim ke server. Jika keluar atau uninstall sekarang, data itu bisa hilang. Jalankan Sinkronisasi dulu.\n\nTetap keluar?" else "Yakin ingin keluar?") }
         "longpress" -> Dlg(p?.name ?: "", close, "Edit", "Tutup", { dialog = "edit" }) {
             TextButton({ dialog = "delete" }) { Text("Hapus produk", color = RED) } }
         "delete" -> Dlg("Hapus produk", close, "Hapus", "Batal", { col.document(p!!.id).delete(); close() }) { Text("Hapus '${p?.name}' beserta datanya?") }
