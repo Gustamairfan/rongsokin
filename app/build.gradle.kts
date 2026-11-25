@@ -9,7 +9,7 @@ android {
     compileSdk = 34
     defaultConfig {
         applicationId = "com.irfan.rongsokin"
-        minSdk = 29; targetSdk = 34; versionCode = 1; versionName = "1.0"
+        minSdk = 29; targetSdk = 34; versionCode = 3; versionName = "3.0"
     }
     signingConfigs {
         create("fixed") {
