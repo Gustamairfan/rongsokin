@@ -47,6 +47,11 @@ import com.google.firebase.auth.*
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.FirebaseNetworkException
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
@@ -190,6 +195,24 @@ class MainActivity : ComponentActivity() {
 }
 
 // ---------- LOGIN ----------
+var credsError by mutableStateOf<String?>(null)
+fun errText(e: Throwable): String = when (e) {
+    is FirebaseAuthException -> when (e.errorCode) {
+        "ERROR_OPERATION_NOT_ALLOWED" -> "Login Email/Password belum diaktifkan. Buka Firebase Console → Authentication → Sign-in method → Email/Password → Enable."
+        "ERROR_WEAK_PASSWORD" -> "Password terlalu lemah (minimal 6 karakter)."
+        else -> "${e.errorCode}: ${e.message}"
+    }
+    is FirebaseNetworkException -> "Koneksi ke server Google gagal atau terlalu lambat."
+    is FirebaseFirestoreException -> "${e.code.name}: ${e.message}"
+    is TimeoutCancellationException -> "Koneksi terlalu lambat (timeout)."
+    else -> e.message ?: e.javaClass.simpleName
+}
+fun hintFor(m: String) = when {
+    "PERMISSION_DENIED" in m -> "→ Rules Firestore menolak akses. Firebase Console → Firestore Database → Rules → tempel rules dari README → Publish."
+    "NOT_FOUND" in m || "FAILED_PRECONDITION" in m -> "→ Database Firestore belum dibuat. Firebase Console → Firestore Database → Create database."
+    else -> "→ Server Google tidak terjangkau/lambat dari jaringan ini. Coba ganti jaringan (Wi-Fi ↔ data seluler)."
+}
+
 fun realEmail(u: FirebaseUser): String? = u.providerData.firstOrNull { it.providerId == "google.com" }?.email ?: u.email
 
 /** Username = email Google user. Password dibuat otomatis, bisa diganti di Profil. Juga memperbaiki akun versi lama. */
@@ -213,7 +236,7 @@ fun Login() {
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     var u by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }; var forgot by remember { mutableStateOf(false) }
-    var privacy by remember { mutableStateOf(false) }
+    var privacy by remember { mutableStateOf(false) }; var showPw by remember { mutableStateOf(false) }
     fun toast(s: String?) = Toast.makeText(ctx, s ?: "Gagal", Toast.LENGTH_LONG).show()
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         scope.launch {
@@ -244,8 +267,13 @@ fun Login() {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(p, { p = it }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, shape = shape,
-                    visualTransformation = PasswordVisualTransformation())
-                TextButton({ forgot = true }, Modifier.align(Alignment.End)) { Text("Lupa password?") }
+                    visualTransformation = if (showPw) VisualTransformation.None else PasswordVisualTransformation())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.clip(RoundedCornerShape(8.dp)).clickable { showPw = !showPw }.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(showPw, { showPw = it }); Text("Tampilkan password", fontSize = 13.sp)
+                    }
+                    TextButton({ forgot = true }) { Text("Lupa password?") }
+                }
                 Button({
                     scope.launch {
                         busy = true
@@ -304,14 +332,18 @@ fun ProductDialog(initial: Product?, onDismiss: () -> Unit, onSave: (String, Str
     var chosen by remember { mutableStateOf<String?>(initial?.let { srcOf(it) }) }
     var manual by remember { mutableStateOf(if ((initial?.market ?: 0.0) > 0) initial!!.market.toLong().toString() else "") }
     val src = chosen ?: guessSource(n)
+    val scroll = rememberScrollState(); val pos = remember { mutableMapOf<String, Int>() }
+    LaunchedEffect(src) { delay(80); pos[src]?.let { scroll.animateScrollTo((it - 24).coerceAtLeast(0)) } }
     Dlg(if (initial == null) "Tambah produk baru" else "Edit produk", onDismiss, "Simpan", "Batal", {
         if (n.isNotBlank()) { onSave(n.trim(), src, manual.toLongOrNull() ?: 0L); onDismiss() }
     }) {
         OutlinedTextField(n, { n = it }, label = { Text("Nama produk") }, singleLine = true, shape = RoundedCornerShape(14.dp))
         Spacer(Modifier.height(12.dp))
         Text("Sumber harga pasar", fontSize = 12.sp, color = Color.Gray)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SRC_LABEL.forEach { (k, v) -> FilterChip(src == k, { chosen = k }, { Text(v, fontSize = 12.sp) }) }
+        Row(Modifier.horizontalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SRC_LABEL.forEach { (k, v) ->
+                FilterChip(src == k, { chosen = k }, { Text(v) }, modifier = Modifier.onGloballyPositioned { pos[k] = it.positionInParent().x.toInt() })
+            }
         }
         Spacer(Modifier.height(6.dp))
         if (src !in AUTO) {
@@ -327,7 +359,7 @@ fun ProductDialog(initial: Product?, onDismiss: () -> Unit, onSave: (String, Str
 fun ProfileDialog(user: FirebaseUser, onDismiss: () -> Unit) {
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     var old by remember { mutableStateOf("") }; var pw by remember { mutableStateOf("") }
-    var edited by remember { mutableStateOf(false) }
+    var edited by remember { mutableStateOf(false) }; var err by remember { mutableStateOf<String?>(null) }
     var show by remember { mutableStateOf(false) }; var busy by remember { mutableStateOf(false) }
     fun toast(s: String) = Toast.makeText(ctx, s, Toast.LENGTH_LONG).show()
     val email = realEmail(user) ?: ""
@@ -344,31 +376,34 @@ fun ProfileDialog(user: FirebaseUser, onDismiss: () -> Unit) {
     }
     val gLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         scope.launch {
-            busy = true
+            busy = true; err = null
             try {
                 val acc = GoogleSignIn.getSignedInAccountFromIntent(r.data).await()
-                auth.currentUser!!.reauthenticate(GoogleAuthProvider.getCredential(acc.idToken, null)).await()
-                apply(pw); toast("Password diperbarui"); onDismiss()
-            } catch (e: Exception) { toast("Gagal: ${e.message}") }
+                withTimeout(25_000) {
+                    auth.currentUser!!.reauthenticate(GoogleAuthProvider.getCredential(acc.idToken, null)).await()
+                    apply(pw)
+                }
+                toast("Password diperbarui"); onDismiss()
+            } catch (e: Exception) { err = errText(e) }
             busy = false
         }
     }
     Dlg("Profil", onDismiss, "Simpan", "Tutup", {
         when {
             busy -> {}
-            pw.length < 6 -> toast("Password minimal 6 karakter")
+            pw.length < 6 -> err = "Password minimal 6 karakter"
             pw == old -> onDismiss()
             else -> scope.launch {
-                busy = true
-                try { apply(pw); toast("Password diperbarui"); onDismiss() }
+                busy = true; err = null
+                try { withTimeout(25_000) { apply(pw) }; toast("Password diperbarui"); onDismiss() }
                 catch (e: FirebaseAuthRecentLoginRequiredException) {
                     var ok = false
                     if (old.isNotEmpty()) ok = runCatching {
-                        auth.currentUser!!.reauthenticate(EmailAuthProvider.getCredential(email, old)).await(); apply(pw); true
+                        withTimeout(25_000) { auth.currentUser!!.reauthenticate(EmailAuthProvider.getCredential(email, old)).await(); apply(pw) }; true
                     }.getOrDefault(false)
                     if (ok) { toast("Password diperbarui"); onDismiss() }
-                    else { toast("Verifikasi dengan akun Google untuk melanjutkan"); gLauncher.launch(gClient(ctx).signInIntent) }
-                } catch (e: Exception) { toast("Gagal: ${e.message}") }
+                    else { err = "Verifikasi dengan akun Google untuk melanjutkan…"; gLauncher.launch(gClient(ctx).signInIntent) }
+                } catch (e: Exception) { err = errText(e) }
                 busy = false
             }
         }
@@ -378,7 +413,9 @@ fun ProfileDialog(user: FirebaseUser, onDismiss: () -> Unit) {
         OutlinedTextField(pw, { pw = it; edited = true }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, enabled = !busy, shape = RoundedCornerShape(14.dp),
             visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation())
         Row(Modifier.clickable { show = !show }, verticalAlignment = Alignment.CenterVertically) { Checkbox(show, { show = it }); Text("Tampilkan password", fontSize = 13.sp) }
-        Text("Gunakan email & password ini untuk login di HP lain.", fontSize = 11.sp, color = Color.Gray)
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
+        err?.let { Text(it, color = RED, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
+        credsError?.let { Text("Login email belum siap: $it", color = RED, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
     }
 }
 
@@ -454,6 +491,7 @@ fun Home(user: FirebaseUser) {
     val col = remember { db.collection("users").document(user.uid).collection("products") }
     var products by remember { mutableStateOf(listOf<Product>()) }
     var pending by remember { mutableStateOf(false) }; var syncing by remember { mutableStateOf(false) }; var stuck by remember { mutableStateOf(false) }
+    var listenErr by remember { mutableStateOf<String?>(null) }; val diag = remember { mutableStateListOf<String>() }; var diagBusy by remember { mutableStateOf(false) }
     var offline by remember { mutableStateOf(prefs.getBoolean("off", false)) }
     var online by remember { mutableStateOf(true) }
     var sort by remember { mutableStateOf(0) }; var query by remember { mutableStateOf<String?>(null) }
@@ -471,15 +509,40 @@ fun Home(user: FirebaseUser) {
         return true
     }
 
+    suspend fun runSync() {
+        diagBusy = true; syncing = true; diag.clear()
+        val t0 = System.currentTimeMillis()
+        fun ms() = "${System.currentTimeMillis() - t0} ms"
+        diag += if (isOnline(ctx)) "✓ Internet tersambung" else "✗ Tidak ada internet"
+        diag += "Akun: ${realEmail(user)}"
+        diag += "Login email/password: " + (credsError?.let { "✗ $it" } ?: "✓ siap")
+        try { db.enableNetwork().await() } catch (e: Exception) { }
+        diag += "Membaca data dari server…"
+        try {
+            val n = withTimeoutOrNull(20_000) { col.get(Source.SERVER).await().size() }
+            diag[diag.lastIndex] = if (n == null) "✗ Baca server: timeout >20 detik\n${hintFor("")}" else "✓ Baca server: $n produk tersimpan di server (${ms()})"
+        } catch (e: Exception) { val m = errText(e); diag[diag.lastIndex] = "✗ Baca server: $m\n${hintFor(m)}" }
+        diag += "Menulis ke server…"
+        try {
+            val ok = withTimeoutOrNull(20_000) { db.collection("users").document(user.uid).collection("diag").document("ping").set(mapOf("t" to System.currentTimeMillis())).await(); true }
+            diag[diag.lastIndex] = if (ok == null) "✗ Tulis server: timeout >20 detik\n${hintFor("")}" else "✓ Tulis server berhasil (${ms()})"
+        } catch (e: Exception) { val m = errText(e); diag[diag.lastIndex] = "✗ Tulis server: $m\n${hintFor(m)}" }
+        diag += "Mengirim data tertunda…"
+        val ok2 = try { withTimeoutOrNull(20_000) { db.waitForPendingWrites().await(); true } } catch (e: Exception) { null }
+        diag[diag.lastIndex] = if (ok2 == true) { pending = false; stuck = false; "✓ Semua data sudah terkirim (${ms()})" } else "✗ Masih ada data yang belum terkirim"
+        syncing = false; diagBusy = false
+    }
+
     DisposableEffect(user.uid) {
-        val l = col.addSnapshotListener(MetadataChanges.INCLUDE) { s, _ ->
-            if (s != null) { products = s.documents.mapNotNull { d -> d.toObject(Product::class.java)?.copy(id = d.id) }; pending = s.metadata.hasPendingWrites() }
+        val l = col.addSnapshotListener(MetadataChanges.INCLUDE) { s, e ->
+            if (e != null) listenErr = errText(e)
+            if (s != null) { listenErr = null; products = s.documents.mapNotNull { d -> d.toObject(Product::class.java)?.copy(id = d.id) }; pending = s.metadata.hasPendingWrites() }
         }
         onDispose { l.remove() }
     }
     LaunchedEffect(Unit) { while (true) { online = isOnline(ctx); delay(3000) } }
     LaunchedEffect(user.uid) {
-        try { ensureCreds(user) } catch (e: Exception) { if (isOnline(ctx)) toast("Gagal menyiapkan login email: ${e.message}") }
+        try { ensureCreds(user); credsError = null } catch (e: Exception) { credsError = errText(e); if (isOnline(ctx)) toast("Login email belum siap: ${errText(e)}") }
     }
     LaunchedEffect(pending, online, offline) {   // data tertunda > 12 dtk dianggap belum terkirim
         stuck = false
@@ -497,10 +560,12 @@ fun Home(user: FirebaseUser) {
     }
 
     val busySync = syncing || (pending && !stuck)
-    val statusColor = when { offline || !online -> Color(0xFFFF5252); stuck -> Color(0xFFFF9800); busySync -> Color(0xFFFFC107); else -> Color(0xFF69F0AE) }
-    val statusText = when { offline || !online -> "Offline"; stuck -> "Tertunda"; busySync -> "Sync…"; else -> "Online" }
+    val bad = stuck || listenErr != null
+    val statusColor = when { offline || !online -> Color(0xFFFF5252); bad -> Color(0xFFFF9800); busySync -> Color(0xFFFFC107); else -> Color(0xFF69F0AE) }
+    val statusText = when { offline || !online -> "Offline"; bad -> "Tertunda"; busySync -> "Sync…"; else -> "Online" }
     val statusHint = when {
         offline -> "Mode offline aktif"; !online -> "Tidak ada koneksi internet"
+        listenErr != null -> "Gagal membaca data server: $listenErr"
         stuck -> "Ada data belum terkirim ke server. Periksa Firestore & rules di Firebase Console."
         busySync -> "Sedang sinkronisasi…"; else -> "Semua data sudah tersinkron" }
     val shown = products.filter { query.isNullOrBlank() || it.name.contains(query!!, true) }.let {
@@ -530,13 +595,7 @@ fun Home(user: FirebaseUser) {
                         DropdownMenuItem({ Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(offline, null); Text("Mode Offline") } }, { offline = !offline })
                         DropdownMenuItem({ Text("Sinkronisasi data", color = if (offline) Color.Gray else Color.Unspecified) }, {
                             menu = false
-                            if (!offline) scope.launch {
-                                syncing = true
-                                val ok = try { withTimeoutOrNull(20_000) { db.enableNetwork().await(); db.waitForPendingWrites().await(); true } } catch (e: Exception) { null }
-                                syncing = false
-                                if (ok == true) { pending = false; stuck = false; toast("Sinkronisasi selesai") }
-                                else toast("Data belum terkirim ke server Google. Periksa internet, dan pastikan Firestore sudah dibuat & rules sudah dipublish.")
-                            }
+                            if (!offline && !diagBusy) { dialog = "sync"; scope.launch { runSync() } }
                         }, enabled = !offline)
                         DropdownMenuItem({ Text("Profil") }, { menu = false; dialog = "profile" })
                         DropdownMenuItem({ Text("Sumber trading") }, { menu = false; dialog = "sources" })
@@ -602,8 +661,12 @@ fun Home(user: FirebaseUser) {
             Text(if (quoteTime > 0) "Terakhir diperbarui: " + SimpleDateFormat("dd MMM yyyy HH:mm", Locale("in", "ID")).format(Date(quoteTime)) else "Belum pernah diperbarui", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             TextButton({ scope.launch { toast(if (refresh()) "Harga diperbarui" else "Gagal, cek koneksi internet") } }) { Text("⟳ Perbarui sekarang") }
         }
+        "sync" -> Dlg("Sinkronisasi", { if (!diagBusy) close() }, "Tutup", null, { if (!diagBusy) close() }) {
+            diag.forEach { Text(it, fontSize = 13.sp); Spacer(Modifier.height(6.dp)) }
+            if (diagBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
         "about" -> Dlg("Tentang Rongsokin", close, "Tutup", null, close) {
-            Text("Rongsokin – Smart Scrap Management System\nVersi 1.0\n\nAplikasi pencatatan stok, harga beli/jual, dan nilai barang rongsok/scrap secara praktis, bisa dipakai online maupun offline.\n\nDibuat oleh: Irfan Gustama") }
+            Text("Rongsokin – Smart Scrap Management System\nVersi 3.0\n\nAplikasi pencatatan stok, harga beli/jual, dan nilai barang rongsok/scrap secara praktis, bisa dipakai online maupun offline.\n\nDibuat oleh: Irfan Gustama") }
         "privacy" -> Dlg("Privasi & Keamanan Data", close, "Tutup", null, close) { Text(PRIVACY_TEXT) }
         "export" -> Dlg("Export", close, "Oke", "Batal", {
             close(); runCatching {
@@ -615,7 +678,9 @@ fun Home(user: FirebaseUser) {
                 toast("Tersimpan di folder Download")
             }.onFailure { toast("Export gagal") }
         }) { Text("Export semua produk ke file Excel (.csv)?") }
-        "logout" -> Dlg("Log out", close, "Keluar", "Batal", { close(); gClient(ctx).signOut(); auth.signOut() }) { Text("Yakin ingin keluar?") }
+        "logout" -> Dlg("Log out", close, "Keluar", "Batal", { close(); gClient(ctx).signOut(); auth.signOut() }) { Text(if (pending || stuck) "⚠ Ada data yang belum terkirim ke server. Jika keluar atau uninstall sekarang, data itu bisa hilang. Jalankan Sinkronisasi dulu.
+
+Tetap keluar?" else "Yakin ingin keluar?") }
         "longpress" -> Dlg(p?.name ?: "", close, "Edit", "Tutup", { dialog = "edit" }) {
             TextButton({ dialog = "delete" }) { Text("Hapus produk", color = RED) } }
         "delete" -> Dlg("Hapus produk", close, "Hapus", "Batal", { col.document(p!!.id).delete(); close() }) { Text("Hapus '${p?.name}' beserta datanya?") }
