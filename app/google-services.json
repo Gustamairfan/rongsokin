@@ -12,7 +12,20 @@
           "package_name": "com.irfan.rongsokin"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1013886804063-bg6t24222vqb3tf1nm6p1ondno393hq8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.irfan.rongsokin",
+            "certificate_hash": "03741872ab434dd3eac1f122a543e7c1edf20cd0"
+          }
+        },
+        {
+          "client_id": "1013886804063-1lthgv3elp19incbuk351rb637njbj5p.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDHGv3Z05zyQ4_H5unWspRB5DaRsu9TIss"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1013886804063-1lthgv3elp19incbuk351rb637njbj5p.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
