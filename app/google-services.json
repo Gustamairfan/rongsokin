@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1013886804063",
+    "project_id": "apk-rongsokin",
+    "storage_bucket": "apk-rongsokin.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1013886804063:android:ed0868d97f7771cef0fbea",
+        "android_client_info": {
+          "package_name": "com.irfan.rongsokin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHGv3Z05zyQ4_H5unWspRB5DaRsu9TIss"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
