@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 package com.irfan.rongsokin
 
 import android.content.ContentValues
@@ -72,26 +72,51 @@ val auth: FirebaseAuth get() = FirebaseAuth.getInstance()
 val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
 
 // ---- sumber harga pasar ----
-val SRC_LABEL = linkedMapOf("CU" to "Tembaga", "AL" to "Aluminium", "FE" to "Besi/Baja", "MANUAL" to "Manual")
+val AUTO = setOf("CU", "AL", "FE", "ST")
+val SRC_LABEL = linkedMapOf(
+    "CU" to "Tembaga", "AL" to "Aluminium", "FE" to "Besi", "ST" to "Baja",
+    "KU" to "Kuningan", "CM" to "Tembaga campuran",
+    "PET" to "Plastik PET", "HDPE" to "Plastik HDPE", "PP" to "Plastik PP", "LDPE" to "Plastik LDPE", "PL" to "Plastik lain",
+    "MANUAL" to "Lainnya"
+)
 val SRC_FULL = mapOf(
     "CU" to "Tembaga – COMEX Copper Futures (HG=F)",
     "AL" to "Aluminium – Aluminum Futures (ALI=F)",
-    "FE" to "Besi/Baja – CME Hot-Rolled Coil Steel (HRC=F)"
+    "FE" to "Besi – Iron Ore 62% Fe Futures (TIO=F)",
+    "ST" to "Baja – CME Hot-Rolled Coil Steel (HRC=F)"
+)
+const val PLASTIC_REF = "Plasticker (plasticker.de), Recycling Today (recyclingtoday.com), ADUPI (Asosiasi Daur Ulang Plastik Indonesia), Bank Sampah Induk setempat"
+val REFS = mapOf(
+    "KU" to "SMM / Shanghai Metals Market (metal.com, harga brass scrap), LME (lme.com, acuan tembaga & seng), Investing.com Indonesia",
+    "CM" to "SMM / Shanghai Metals Market (metal.com, harga copper scrap), LME (lme.com), Investing.com Indonesia",
+    "PET" to PLASTIC_REF, "HDPE" to PLASTIC_REF, "PP" to PLASTIC_REF, "LDPE" to PLASTIC_REF, "PL" to PLASTIC_REF,
+    "MANUAL" to "harga pengepul/bank sampah setempat, TradingView, Investing.com Indonesia"
 )
 fun guessSource(name: String): String {
     val n = name.lowercase()
     return when {
+        "tembaga" in n && "campur" in n -> "CM"
         "tembaga" in n || "copper" in n -> "CU"
+        "kuningan" in n || "brass" in n -> "KU"
         "alum" in n -> "AL"
-        "besi" in n || "baja" in n || "steel" in n -> "FE"
+        "baja" in n || "steel" in n -> "ST"
+        "besi" in n -> "FE"
+        Regex("\\bpet\\b").containsMatchIn(n) -> "PET"
+        "hdpe" in n -> "HDPE"
+        Regex("\\bpp\\b").containsMatchIn(n) -> "PP"
+        "ldpe" in n -> "LDPE"
+        "plastik" in n || "plastic" in n -> "PL"
         else -> "MANUAL"
     }
 }
-fun srcOf(p: Product) = if (p.source in SRC_LABEL) p.source else guessSource(p.name)
+fun srcOf(p: Product): String {
+    val s = if (p.source in SRC_LABEL) p.source else guessSource(p.name)
+    return if (s == "FE" && guessSource(p.name) == "ST") "ST" else s
+}
 /** (harga sekarang, harga sebelumnya) dalam Rp/Kg */
 fun priceOf(p: Product, q: Map<String, Pair<Double, Double>>): Pair<Double, Double> {
     val s = srcOf(p)
-    if (s == "MANUAL") return p.market to (if (p.prev > 0) p.prev else p.market)
+    if (s !in AUTO) return p.market to (if (p.prev > 0) p.prev else p.market)
     return q[s] ?: (p.market to p.prev)
 }
 
@@ -106,7 +131,7 @@ suspend fun fetchQuotes(): Map<String, Pair<Double, Double>>? = withContext(Disp
     }
     val fx = runCatching { q("IDR=X") }.getOrNull() ?: return@withContext null
     val out = mutableMapOf<String, Pair<Double, Double>>()
-    listOf(Triple("CU", "HG=F", 2.20462), Triple("AL", "ALI=F", 0.001), Triple("FE", "HRC=F", 1 / 907.185)).forEach { (k, s, f) ->
+    listOf(Triple("CU", "HG=F", 2.20462), Triple("AL", "ALI=F", 0.001), Triple("FE", "TIO=F", 0.001), Triple("ST", "HRC=F", 1 / 907.185)).forEach { (k, s, f) ->
         runCatching { val (a, b) = q(s); out[k] = (a * f * fx.first) to (b * f * fx.second) }
     }
     if (out.isEmpty()) null else out
@@ -165,16 +190,17 @@ class MainActivity : ComponentActivity() {
 }
 
 // ---------- LOGIN ----------
-/** Username = email Google user. Password dibuat otomatis, bisa diganti di Profil. */
+fun realEmail(u: FirebaseUser): String? = u.providerData.firstOrNull { it.providerId == "google.com" }?.email ?: u.email
+
+/** Username = email Google user. Password dibuat otomatis, bisa diganti di Profil. Juga memperbaiki akun versi lama. */
 suspend fun ensureCreds(u: FirebaseUser) {
-    val email = u.email ?: return
-    val doc = db.collection("users").document(u.uid)
-    val snap = runCatching { doc.get().await() }.getOrNull()
-    if (snap != null && snap.exists() && snap.getString("username")?.contains("@") == true) return
-    runCatching { if (u.providerData.any { it.providerId == "password" }) u.unlink("password").await() }
+    val email = realEmail(u) ?: return
+    val pwProv = u.providerData.firstOrNull { it.providerId == "password" }
+    if (pwProv?.email.equals(email, true)) return
+    if (pwProv != null) u.unlink("password").await()
     val pw = (1..10).map { "abcdefghjkmnpqrstuvwxyz23456789".random() }.joinToString("")
     u.linkWithCredential(EmailAuthProvider.getCredential(email, pw)).await()
-    doc.set(mapOf("username" to email, "password" to pw)).await()
+    db.collection("users").document(u.uid).set(mapOf("username" to email, "password" to pw), SetOptions.merge())
 }
 
 fun gClient(ctx: Context) = GoogleSignIn.getClient(
@@ -194,8 +220,7 @@ fun Login() {
             busy = true
             try {
                 val acc = GoogleSignIn.getSignedInAccountFromIntent(r.data).await()
-                val res = auth.signInWithCredential(GoogleAuthProvider.getCredential(acc.idToken, null)).await()
-                ensureCreds(res.user!!)
+                auth.signInWithCredential(GoogleAuthProvider.getCredential(acc.idToken, null)).await()
             } catch (e: Exception) { toast(e.message) }
             busy = false
         }
@@ -285,14 +310,16 @@ fun ProductDialog(initial: Product?, onDismiss: () -> Unit, onSave: (String, Str
         OutlinedTextField(n, { n = it }, label = { Text("Nama produk") }, singleLine = true, shape = RoundedCornerShape(14.dp))
         Spacer(Modifier.height(12.dp))
         Text("Sumber harga pasar", fontSize = 12.sp, color = Color.Gray)
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SRC_LABEL.forEach { (k, v) -> FilterChip(src == k, { chosen = k }, { Text(v) }) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SRC_LABEL.forEach { (k, v) -> FilterChip(src == k, { chosen = k }, { Text(v, fontSize = 12.sp) }) }
         }
         Spacer(Modifier.height(6.dp))
-        if (src == "MANUAL") OutlinedTextField(manual, { manual = it.filter(Char::isDigit).take(12) }, singleLine = true, shape = RoundedCornerShape(14.dp),
-            label = { Text("Harga pasar manual (Rp/Kg)") }, visualTransformation = Thousands,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-        else Text("Diambil otomatis saat online dari ${SRC_FULL[src]}.", fontSize = 11.sp, color = Color.Gray)
+        if (src !in AUTO) {
+            OutlinedTextField(manual, { manual = it.filter(Char::isDigit).take(12) }, singleLine = true, shape = RoundedCornerShape(14.dp),
+                label = { Text("Harga pasar manual (Rp/Kg)") }, visualTransformation = Thousands,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            Text("Referensi: ${REFS[src] ?: REFS["MANUAL"]}", fontSize = 11.sp, color = Color.Gray)
+        } else Text("Diambil otomatis saat online dari ${SRC_FULL[src]}.", fontSize = 11.sp, color = Color.Gray)
     }
 }
 
@@ -300,31 +327,55 @@ fun ProductDialog(initial: Product?, onDismiss: () -> Unit, onSave: (String, Str
 fun ProfileDialog(user: FirebaseUser, onDismiss: () -> Unit) {
     val ctx = LocalContext.current; val scope = rememberCoroutineScope()
     var old by remember { mutableStateOf("") }; var pw by remember { mutableStateOf("") }
+    var edited by remember { mutableStateOf(false) }
     var show by remember { mutableStateOf(false) }; var busy by remember { mutableStateOf(false) }
     fun toast(s: String) = Toast.makeText(ctx, s, Toast.LENGTH_LONG).show()
+    val email = realEmail(user) ?: ""
     LaunchedEffect(Unit) {
-        runCatching { val d = db.collection("users").document(user.uid).get().await(); old = d.getString("password") ?: ""; pw = old }
+        runCatching { withTimeoutOrNull(5000) { db.collection("users").document(user.uid).get().await() } }.getOrNull()?.let {
+            old = it.getString("password") ?: ""; if (!edited) pw = old
+        }
+    }
+    suspend fun apply(newPw: String) {
+        val cu = auth.currentUser ?: throw IllegalStateException("Belum login")
+        if (cu.providerData.none { it.providerId == "password" }) cu.linkWithCredential(EmailAuthProvider.getCredential(email, newPw)).await()
+        else cu.updatePassword(newPw).await()
+        db.collection("users").document(cu.uid).set(mapOf("username" to email, "password" to newPw), SetOptions.merge())
+    }
+    val gLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        scope.launch {
+            busy = true
+            try {
+                val acc = GoogleSignIn.getSignedInAccountFromIntent(r.data).await()
+                auth.currentUser!!.reauthenticate(GoogleAuthProvider.getCredential(acc.idToken, null)).await()
+                apply(pw); toast("Password diperbarui"); onDismiss()
+            } catch (e: Exception) { toast("Gagal: ${e.message}") }
+            busy = false
+        }
     }
     Dlg("Profil", onDismiss, "Simpan", "Tutup", {
         when {
+            busy -> {}
             pw.length < 6 -> toast("Password minimal 6 karakter")
             pw == old -> onDismiss()
             else -> scope.launch {
                 busy = true
-                try {
-                    val cu = auth.currentUser!!
-                    if (old.isNotEmpty()) runCatching { cu.reauthenticate(EmailAuthProvider.getCredential(cu.email!!, old)).await() }
-                    cu.updatePassword(pw).await()
-                    db.collection("users").document(cu.uid).set(mapOf("username" to cu.email, "password" to pw), SetOptions.merge()).await()
-                    toast("Password diperbarui"); onDismiss()
-                } catch (e: Exception) { toast("Gagal mengganti password (butuh internet). ${e.message ?: ""}") }
+                try { apply(pw); toast("Password diperbarui"); onDismiss() }
+                catch (e: FirebaseAuthRecentLoginRequiredException) {
+                    var ok = false
+                    if (old.isNotEmpty()) ok = runCatching {
+                        auth.currentUser!!.reauthenticate(EmailAuthProvider.getCredential(email, old)).await(); apply(pw); true
+                    }.getOrDefault(false)
+                    if (ok) { toast("Password diperbarui"); onDismiss() }
+                    else { toast("Verifikasi dengan akun Google untuk melanjutkan"); gLauncher.launch(gClient(ctx).signInIntent) }
+                } catch (e: Exception) { toast("Gagal: ${e.message}") }
                 busy = false
             }
         }
     }) {
-        OutlinedTextField(user.email ?: "", {}, Modifier.fillMaxWidth(), readOnly = true, label = { Text("Username (email)") }, singleLine = true, shape = RoundedCornerShape(14.dp))
+        OutlinedTextField(email, {}, Modifier.fillMaxWidth(), readOnly = true, label = { Text("Username (email)") }, singleLine = true, shape = RoundedCornerShape(14.dp))
         Spacer(Modifier.height(10.dp))
-        OutlinedTextField(pw, { pw = it }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, enabled = !busy, shape = RoundedCornerShape(14.dp),
+        OutlinedTextField(pw, { pw = it; edited = true }, Modifier.fillMaxWidth(), label = { Text("Password") }, singleLine = true, enabled = !busy, shape = RoundedCornerShape(14.dp),
             visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation())
         Row(Modifier.clickable { show = !show }, verticalAlignment = Alignment.CenterVertically) { Checkbox(show, { show = it }); Text("Tampilkan password", fontSize = 13.sp) }
         Text("Gunakan email & password ini untuk login di HP lain.", fontSize = 11.sp, color = Color.Gray)
@@ -392,7 +443,7 @@ fun isOnline(ctx: Context): Boolean {
 
 @Composable
 fun HeaderAction(text: String, modifier: Modifier, onClick: () -> Unit) =
-    Box(modifier.clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .18f)).clickable { onClick() }.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+    Box(modifier.clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .18f)).clickable { onClick() }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
         Text(text, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 
@@ -402,7 +453,7 @@ fun Home(user: FirebaseUser) {
     val prefs = remember { ctx.getSharedPreferences("r", 0) }
     val col = remember { db.collection("users").document(user.uid).collection("products") }
     var products by remember { mutableStateOf(listOf<Product>()) }
-    var pending by remember { mutableStateOf(false) }; var syncing by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf(false) }; var syncing by remember { mutableStateOf(false) }; var stuck by remember { mutableStateOf(false) }
     var offline by remember { mutableStateOf(prefs.getBoolean("off", false)) }
     var online by remember { mutableStateOf(true) }
     var sort by remember { mutableStateOf(0) }; var query by remember { mutableStateOf<String?>(null) }
@@ -427,6 +478,16 @@ fun Home(user: FirebaseUser) {
         onDispose { l.remove() }
     }
     LaunchedEffect(Unit) { while (true) { online = isOnline(ctx); delay(3000) } }
+    LaunchedEffect(user.uid) {
+        try { ensureCreds(user) } catch (e: Exception) { if (isOnline(ctx)) toast("Gagal menyiapkan login email: ${e.message}") }
+    }
+    LaunchedEffect(pending, online, offline) {   // data tertunda > 12 dtk dianggap belum terkirim
+        stuck = false
+        if (pending && online && !offline) {
+            val ok = try { withTimeoutOrNull(12_000) { db.waitForPendingWrites().await(); true } } catch (e: Exception) { null }
+            if (ok == null) stuck = true else pending = false
+        }
+    }
     LaunchedEffect(offline) {
         prefs.edit().putBoolean("off", offline).apply()
         if (offline) db.disableNetwork() else db.enableNetwork()
@@ -435,8 +496,13 @@ fun Home(user: FirebaseUser) {
         while (true) { if (online && !offline) refresh(); delay(3_600_000) }
     }
 
-    val statusColor = when { offline || !online -> Color(0xFFFF5252); syncing || pending -> Color(0xFFFFC107); else -> Color(0xFF69F0AE) }
-    val statusText = when { offline || !online -> "Offline"; syncing || pending -> "Sync…"; else -> "Online" }
+    val busySync = syncing || (pending && !stuck)
+    val statusColor = when { offline || !online -> Color(0xFFFF5252); stuck -> Color(0xFFFF9800); busySync -> Color(0xFFFFC107); else -> Color(0xFF69F0AE) }
+    val statusText = when { offline || !online -> "Offline"; stuck -> "Tertunda"; busySync -> "Sync…"; else -> "Online" }
+    val statusHint = when {
+        offline -> "Mode offline aktif"; !online -> "Tidak ada koneksi internet"
+        stuck -> "Ada data belum terkirim ke server. Periksa Firestore & rules di Firebase Console."
+        busySync -> "Sedang sinkronisasi…"; else -> "Semua data sudah tersinkron" }
     val shown = products.filter { query.isNullOrBlank() || it.name.contains(query!!, true) }.let {
         when (sort) { 1 -> it.sortedByDescending { p -> p.stock }; 2 -> it.sortedByDescending { p -> priceOf(p, quotes).first }; else -> it.sortedBy { p -> p.created } }
     }
@@ -444,16 +510,16 @@ fun Home(user: FirebaseUser) {
 
     Column(Modifier.fillMaxSize()) {
         // HEADER
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
-            .background(Brush.verticalGradient(listOf(DARK, GREEN2))).padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 16.dp)) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+            .background(Brush.verticalGradient(listOf(DARK, GREEN2))).padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(painterResource(R.drawable.logo), null, Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Color.White))
+                Image(painterResource(R.drawable.logo), null, Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(Color.White))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Rongsokin", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
-                    Text("Smart Scrap Management", color = Color.White.copy(alpha = .75f), fontSize = 11.sp)
+                    Text("Total nilai stok · ${products.size} produk · ${rp(totalKg)} Kg", color = Color.White.copy(alpha = .75f), fontSize = 11.sp, maxLines = 1)
+                    Text("Rp ${rp(totalValue.toLong())}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
-                Row(Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White.copy(alpha = .2f)).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White.copy(alpha = .2f)).clickable { toast(statusHint) }.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(9.dp).clip(CircleShape).background(statusColor)); Spacer(Modifier.width(6.dp))
                     Text(statusText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
@@ -464,9 +530,13 @@ fun Home(user: FirebaseUser) {
                         DropdownMenuItem({ Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(offline, null); Text("Mode Offline") } }, { offline = !offline })
                         DropdownMenuItem({ Text("Sinkronisasi data", color = if (offline) Color.Gray else Color.Unspecified) }, {
                             menu = false
-                            if (!offline) scope.launch { syncing = true
-                                try { db.enableNetwork().await(); db.waitForPendingWrites().await(); toast("Sinkronisasi selesai") } catch (e: Exception) { toast("Sinkronisasi gagal") }
-                                syncing = false }
+                            if (!offline) scope.launch {
+                                syncing = true
+                                val ok = try { withTimeoutOrNull(20_000) { db.enableNetwork().await(); db.waitForPendingWrites().await(); true } } catch (e: Exception) { null }
+                                syncing = false
+                                if (ok == true) { pending = false; stuck = false; toast("Sinkronisasi selesai") }
+                                else toast("Data belum terkirim ke server Google. Periksa internet, dan pastikan Firestore sudah dibuat & rules sudah dipublish.")
+                            }
                         }, enabled = !offline)
                         DropdownMenuItem({ Text("Profil") }, { menu = false; dialog = "profile" })
                         DropdownMenuItem({ Text("Sumber trading") }, { menu = false; dialog = "sources" })
@@ -477,17 +547,11 @@ fun Home(user: FirebaseUser) {
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Column(Modifier.padding(end = 8.dp)) {
-                Text("Total nilai stok", color = Color.White.copy(alpha = .75f), fontSize = 12.sp)
-                Text("Rp ${rp(totalValue.toLong())}", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text("${products.size} produk · ${rp(totalKg)} Kg", color = Color.White.copy(alpha = .75f), fontSize = 12.sp)
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HeaderAction("＋ Produk", Modifier.weight(1f)) { dialog = "add" }
-                    HeaderAction("🧮 Kalkulator", Modifier.weight(1.2f)) { dialog = "calc" }
-                    HeaderAction("🔍 Cari", Modifier.weight(1f)) { query = if (query == null) "" else null }
-                }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HeaderAction("＋ Produk", Modifier.weight(1f)) { dialog = "add" }
+                HeaderAction("🧮 Kalkulator", Modifier.weight(1.2f)) { dialog = "calc" }
+                HeaderAction("🔍 Cari", Modifier.weight(1f)) { query = if (query == null) "" else null }
             }
         }
         query?.let {
@@ -522,18 +586,21 @@ fun Home(user: FirebaseUser) {
                 Row(Modifier.clickable { sort = i; close() }, verticalAlignment = Alignment.CenterVertically) { RadioButton(sort == i, { sort = i; close() }); Text(t) } }
         }
         "sources" -> Dlg("Sumber trading", close, "Tutup", null, close) {
-            Text("Harga pasar adalah patokan harga logam di bursa internasional (bukan harga lapak/pengepul), dikonversi ke Rupiah per Kg memakai kurs USD/IDR. Diperbarui tiap 1 jam saat online.", fontSize = 13.sp)
+            Text("Harga pasar adalah patokan harga bursa internasional, bukan harga lapak/pengepul. Dikonversi ke Rupiah per Kg memakai kurs USD/IDR dan diperbarui tiap 1 jam saat online.", fontSize = 13.sp)
             Spacer(Modifier.height(10.dp))
+            Text("Otomatis", fontWeight = FontWeight.Bold)
             SRC_FULL.values.forEach { Text("• $it", fontSize = 13.sp) }
             Text("• Kurs USD/IDR (IDR=X)", fontSize = 13.sp)
             Text("Data diambil lewat Yahoo Finance.", fontSize = 12.sp, color = Color.Gray)
-            Spacer(Modifier.height(8.dp))
-            Text("Produk di luar logam di atas (kardus, plastik, kertas, dll) tidak punya harga bursa — pilih sumber “Manual” dan isi sendiri.", fontSize = 12.sp, color = Color.Gray)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
+            Text("Referensi manual (isi harga sendiri)", fontWeight = FontWeight.Bold)
+            Text("• Kuningan: ${REFS["KU"]}", fontSize = 13.sp)
+            Text("• Tembaga campuran: ${REFS["CM"]}", fontSize = 13.sp)
+            Text("• Plastik (PET, HDPE, PP, LDPE): $PLASTIC_REF", fontSize = 13.sp)
+            Text("• Lainnya (kardus, kertas, dll): ${REFS["MANUAL"]}", fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
             Text(if (quoteTime > 0) "Terakhir diperbarui: " + SimpleDateFormat("dd MMM yyyy HH:mm", Locale("in", "ID")).format(Date(quoteTime)) else "Belum pernah diperbarui", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             TextButton({ scope.launch { toast(if (refresh()) "Harga diperbarui" else "Gagal, cek koneksi internet") } }) { Text("⟳ Perbarui sekarang") }
-            TextButton({ ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://id.investing.com/commodities/copper"))) }) { Text("Buka Investing.com (referensi)") }
-            TextButton({ ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.tradingview.com/symbols/COMEX-HG1!/"))) }) { Text("Buka TradingView (referensi)") }
         }
         "about" -> Dlg("Tentang Rongsokin", close, "Tutup", null, close) {
             Text("Rongsokin – Smart Scrap Management System\nVersi 1.0\n\nAplikasi pencatatan stok, harga beli/jual, dan nilai barang rongsok/scrap secara praktis, bisa dipakai online maupun offline.\n\nDibuat oleh: Irfan Gustama") }
@@ -572,13 +639,13 @@ fun PriceField(label: String, value: Long, onSave: (Long) -> Unit) {
     var t by remember(value) { mutableStateOf(if (value == 0L) "" else value.toString()) }
     LaunchedEffect(t) { delay(700); val n = t.toLongOrNull() ?: 0L; if (n != value) onSave(n) }
     Column {
-        Text(label, fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(start = 4.dp, bottom = 3.dp))
+        Text(label, fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         BasicTextField(t, { t = it.filter(Char::isDigit).take(12) }, Modifier.fillMaxWidth(), singleLine = true,
             textStyle = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = INK),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }), visualTransformation = Thousands,
             decorationBox = { inner ->
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SOFT).padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SOFT).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Rp ", color = Color.Gray, fontSize = 13.sp)
                     Box(Modifier.weight(1f)) { if (t.isEmpty()) Text("0", color = Color.LightGray, fontSize = 16.sp); inner() }
                 }
@@ -591,35 +658,40 @@ fun ProductCard(no: Int, p: Product, price: Pair<Double, Double>, onLong: () -> 
     val (now, prev) = price
     val diff = if (prev > 0) (now - prev) / prev * 100 else 0.0
     val c = if (diff >= 0) GREEN else RED
-    Card(Modifier.padding(horizontal = 16.dp, vertical = 7.dp).fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onLong),
-        shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
-        Column(Modifier.padding(16.dp)) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onLong),
+        shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(36.dp).clip(CircleShape).background(Color(0xFFD8F0E0)), contentAlignment = Alignment.Center) {
-                    Text("$no", fontWeight = FontWeight.Bold, color = GREEN)
+                Box(Modifier.size(28.dp).clip(CircleShape).background(Color(0xFFD8F0E0)), contentAlignment = Alignment.Center) {
+                    Text("$no", fontWeight = FontWeight.Bold, color = GREEN, fontSize = 13.sp)
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(p.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = INK, maxLines = 1)
-                    Text("Pasar: ${SRC_LABEL[srcOf(p)]}", fontSize = 11.sp, color = Color.Gray)
+                    Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = INK, maxLines = 1)
+                    Text(SRC_LABEL[srcOf(p)] ?: "", fontSize = 10.sp, color = Color.Gray)
                 }
-                if (now > 0) Column(Modifier.clip(RoundedCornerShape(12.dp)).background(c.copy(alpha = .1f)).padding(horizontal = 10.dp, vertical = 5.dp), horizontalAlignment = Alignment.End) {
-                    Text("Rp ${rp(now.toLong())}/kg", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = INK)
-                    Text("${if (diff >= 0) "▲" else "▼"} ${"%.2f".format(Math.abs(diff))}%", fontSize = 11.sp, color = c, fontWeight = FontWeight.SemiBold)
+                if (now > 0) Column(Modifier.clip(RoundedCornerShape(10.dp)).background(c.copy(alpha = .1f)).padding(horizontal = 8.dp, vertical = 3.dp), horizontalAlignment = Alignment.End) {
+                    Text("Rp ${rp(now.toLong())}/kg", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = INK)
+                    Text("${if (diff >= 0) "▲" else "▼"} ${"%.2f".format(Math.abs(diff))}%", fontSize = 10.sp, color = c, fontWeight = FontWeight.SemiBold)
                 } else Text("Pasar: -", fontSize = 12.sp, color = Color.Gray)
             }
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) { PriceField("Harga jual (wajib)", p.sell) { onSave("sell", it) } }
                 Box(Modifier.weight(1f)) { PriceField("Harga beli", p.buy) { onSave("buy", it) } }
             }
-            Spacer(Modifier.height(14.dp))
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFFF7FAF8)).padding(12.dp)) {
-                Column(Modifier.weight(1f)) { Text("Stok total", fontSize = 11.sp, color = Color.Gray); Text("${rp(p.stock)} Kg", fontWeight = FontWeight.Bold, color = INK) }
-                Column(Modifier.weight(1f)) { Text("Masuk terakhir", fontSize = 11.sp, color = Color.Gray); Text("${rp(p.lastIn)} Kg", fontWeight = FontWeight.Bold, color = INK) }
-                Column(Modifier.weight(1.3f), horizontalAlignment = Alignment.End) { Text("Total jual", fontSize = 11.sp, color = Color.Gray); Text("Rp ${rp((p.stock * p.sell).toLong())}", fontWeight = FontWeight.Black, color = GREEN) }
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Stok total ${rp(p.stock)} Kg", fontSize = 11.sp, color = INK, fontWeight = FontWeight.SemiBold)
+                    Text("Masuk terakhir ${rp(p.lastIn)} Kg", fontSize = 11.sp, color = Color.Gray)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Total jual", fontSize = 10.sp, color = Color.Gray)
+                    Text("Rp ${rp((p.stock * p.sell).toLong())}", fontSize = 14.sp, fontWeight = FontWeight.Black, color = GREEN)
+                }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onStock, Modifier.weight(1f), shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("＋ Stok", fontSize = 13.sp) }
                 OutlinedButton(onRevisi, Modifier.weight(1f), shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Revisi", fontSize = 13.sp) }
