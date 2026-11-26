@@ -48,6 +48,19 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.ImageView
+import android.widget.Button as AButton
+import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.ads.AdListener
+import com.google.android.gms.ads.AdLoader
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.nativead.NativeAd
+import com.google.android.gms.ads.nativead.NativeAdOptions
+import com.google.android.gms.ads.nativead.NativeAdView
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.FirebaseNetworkException
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -173,13 +186,19 @@ object Thousands : VisualTransformation {
     }
 }
 
+/** true = iklan uji coba Google (aman untuk testing). Ubah ke false HANYA untuk rilis publik. */
+const val ADS_TEST_MODE = true
+val AD_UNIT_ID = if (ADS_TEST_MODE) "ca-app-pub-3940256099942544/2247696110" else "ca-app-pub-3598338199328764/5722393983"
+
 const val PRIVACY_TEXT = "Data produk, stok, dan harga Anda disimpan di akun Google/Firebase milik Anda dan hanya dapat diakses oleh akun Anda.\n\n" +
     "Kami tidak menjual atau membagikan data Anda kepada pihak ketiga. Pengelolaan data pribadi mengacu pada UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi dan UU ITE.\n\n" +
-    "Data dikirim melalui koneksi terenkripsi (HTTPS). Anda dapat mengekspor atau meminta penghapusan data kapan saja."
+    "Data dikirim melalui koneksi terenkripsi (HTTPS). Anda dapat mengekspor atau meminta penghapusan data kapan saja.\n\n" +
+    "Aplikasi menampilkan iklan dari Google AdMob. AdMob dapat memakai ID iklan perangkat untuk menayangkan iklan. Data produk dan stok Anda tidak pernah dibagikan kepada pengiklan."
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        MobileAds.initialize(this) {}
         window.statusBarColor = 0xFF0B6B35.toInt()
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = GREEN, secondary = GREEN2, background = BG, surface = Color.White)) {
@@ -617,12 +636,12 @@ fun Home(user: FirebaseUser) {
             OutlinedTextField(it, { v -> query = v }, Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 0.dp), placeholder = { Text("Cari produk…") },
                 singleLine = true, shape = RoundedCornerShape(16.dp), colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.White, unfocusedContainerColor = Color.White))
         }
-        if (shown.isEmpty()) Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        if (shown.isEmpty()) Column(Modifier.weight(1f).fillMaxWidth().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Image(painterResource(R.drawable.logo), null, Modifier.size(140.dp).clip(RoundedCornerShape(28.dp)))
             Spacer(Modifier.height(12.dp))
             Text(if (products.isEmpty()) "Belum ada produk" else "Produk tidak ditemukan", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = INK)
             Text("Tekan “＋ Produk” untuk mulai mencatat.", color = Color.Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
-        } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)) {
+        } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)) {
             itemsIndexed(shown, key = { _, p -> p.id }) { i, p ->
                 ProductCard(i + 1, p, priceOf(p, quotes),
                     onLong = { sel = p; dialog = "longpress" },
@@ -632,6 +651,7 @@ fun Home(user: FirebaseUser) {
                     onSave = { f, v -> upd(p, f to v) })
             }
         }
+        AdBar(online && !offline)
     }
 
     val p = sel
@@ -761,5 +781,67 @@ fun ProductCard(no: Int, p: Product, price: Pair<Double, Double>, onLong: () -> 
                 Button(onSell, Modifier.weight(1f), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(ORANGE), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Jual ➜", fontSize = 13.sp) }
             }
         }
+    }
+}
+
+
+// ---------- IKLAN (AdMob Native Advanced, tampilan banner kecil) ----------
+fun buildAdView(c: Context): NativeAdView {
+    val d = c.resources.displayMetrics.density
+    fun dp(x: Int) = (x * d).toInt()
+    val root = NativeAdView(c)
+    val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(10), dp(10), dp(8)) }
+    val icon = ImageView(c).apply { layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)) }
+    val col = LinearLayout(c).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(8) }
+    }
+    val top = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+    val badge = TextView(c).apply { text = "Iklan"; textSize = 9f; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xFFF9A825.toInt()); setPadding(dp(4), 0, dp(4), 0) }
+    val headline = TextView(c).apply {
+        textSize = 14f; setTypeface(null, android.graphics.Typeface.BOLD); maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END; setTextColor(0xFF1B2B22.toInt()); setPadding(dp(6), 0, 0, 0)
+    }
+    val body = TextView(c).apply { textSize = 11f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTextColor(0xFF777777.toInt()) }
+    val cta = AButton(c).apply {
+        textSize = 12f; isAllCaps = false; minHeight = 0; minimumHeight = 0; setPadding(dp(12), 0, dp(12), 0)
+        setTextColor(0xFFFFFFFF.toInt())
+        background = android.graphics.drawable.GradientDrawable().apply { setColor(0xFF0F7A3E.toInt()); cornerRadius = dp(17).toFloat() }
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34))
+    }
+    top.addView(badge); top.addView(headline); col.addView(top); col.addView(body)
+    row.addView(icon); row.addView(col); row.addView(cta); root.addView(row)
+    root.iconView = icon; root.headlineView = headline; root.bodyView = body; root.callToActionView = cta
+    return root
+}
+
+fun bindAd(v: NativeAdView, a: NativeAd) {
+    (v.headlineView as TextView).text = a.headline
+    (v.bodyView as TextView).apply { text = a.body ?: a.advertiser ?: ""; visibility = if (text.isNullOrEmpty()) android.view.View.GONE else android.view.View.VISIBLE }
+    (v.callToActionView as AButton).apply { text = a.callToAction ?: "Buka"; visibility = if (a.callToAction == null) android.view.View.GONE else android.view.View.VISIBLE }
+    (v.iconView as ImageView).apply { setImageDrawable(a.icon?.drawable); visibility = if (a.icon == null) android.view.View.GONE else android.view.View.VISIBLE }
+    v.setNativeAd(a)
+}
+
+/** Slot iklan kecil di bawah layar. Tidak memakan ruang jika iklan belum/tidak termuat. */
+@Composable
+fun AdBar(enabled: Boolean) {
+    val ctx = LocalContext.current
+    var ad by remember { mutableStateOf<NativeAd?>(null) }
+    val holder = remember { arrayOfNulls<NativeAd>(1) }
+    DisposableEffect(Unit) { onDispose { holder[0]?.destroy(); holder[0] = null } }
+    LaunchedEffect(enabled) {
+        if (!enabled) { ad = null; return@LaunchedEffect }
+        while (true) {
+            AdLoader.Builder(ctx, AD_UNIT_ID)
+                .forNativeAd { a -> holder[0]?.destroy(); holder[0] = a; ad = a }
+                .withAdListener(object : AdListener() { override fun onAdFailedToLoad(e: LoadAdError) {} })
+                .withNativeAdOptions(NativeAdOptions.Builder().setAdChoicesPlacement(NativeAdOptions.ADCHOICES_TOP_RIGHT).build())
+                .build().loadAd(AdRequest.Builder().build())
+            delay(120_000)
+        }
+    }
+    ad?.let { a ->
+        AndroidView(factory = { c -> buildAdView(c) }, update = { v -> bindAd(v, a) }, modifier = Modifier.fillMaxWidth().background(Color.White))
     }
 }
