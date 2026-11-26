@@ -1,0 +1,130 @@
+{
+ "updated": "2026-11-27",
+ "catatan": "Harga indikatif (Rp/kg). Edit angka price & prev lalu commit; aplikasi memuat otomatis tiap 1 jam.",
+ "items": [
+  {
+   "key": "CU",
+   "group": "logam",
+   "name": "Tembaga",
+   "exchange": "COMEX Copper (HG=F)",
+   "live": true
+  },
+  {
+   "key": "AL",
+   "group": "logam",
+   "name": "Aluminium",
+   "exchange": "Aluminum Futures (ALI=F)",
+   "live": true
+  },
+  {
+   "key": "FE",
+   "group": "logam",
+   "name": "Besi (bijih besi)",
+   "exchange": "SGX Iron Ore 62% (TIO=F)",
+   "live": true
+  },
+  {
+   "key": "ST",
+   "group": "logam",
+   "name": "Baja (HRC)",
+   "exchange": "CME Hot-Rolled Coil (HRC=F)",
+   "live": true
+  },
+  {
+   "key": "KU",
+   "group": "logam",
+   "name": "Kuningan",
+   "exchange": "Estimasi 40% harga tembaga",
+   "basis": "CU",
+   "factor": 0.4
+  },
+  {
+   "key": "CM",
+   "group": "logam",
+   "name": "Tembaga campuran",
+   "exchange": "Estimasi 60% harga tembaga",
+   "basis": "CU",
+   "factor": 0.6
+  },
+  {
+   "key": "SENG",
+   "group": "logam",
+   "name": "Seng (lembaran bekas)",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 3000,
+   "prev": 3000
+  },
+  {
+   "key": "PET",
+   "group": "plastik",
+   "name": "Plastik PET (botol)",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 5000,
+   "prev": 5000
+  },
+  {
+   "key": "HDPE",
+   "group": "plastik",
+   "name": "Plastik HDPE",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 5000,
+   "prev": 5000
+  },
+  {
+   "key": "PP",
+   "group": "plastik",
+   "name": "Plastik PP (gelas)",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 4000,
+   "prev": 4000
+  },
+  {
+   "key": "LDPE",
+   "group": "plastik",
+   "name": "Plastik LDPE (lembaran)",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 3000,
+   "prev": 3000
+  },
+  {
+   "key": "PL",
+   "group": "plastik",
+   "name": "Plastik campur",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 2000,
+   "prev": 2000
+  },
+  {
+   "key": "KRD",
+   "group": "kertas",
+   "name": "Kardus / Karton",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 2000,
+   "prev": 2000
+  },
+  {
+   "key": "HVS",
+   "group": "kertas",
+   "name": "Kertas HVS (putih)",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 3000,
+   "prev": 3000
+  },
+  {
+   "key": "KRN",
+   "group": "kertas",
+   "name": "Kertas koran",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 2500,
+   "prev": 2500
+  },
+  {
+   "key": "KCP",
+   "group": "kertas",
+   "name": "Kertas campur",
+   "exchange": "Perkiraan pengepul Indonesia",
+   "price": 1500,
+   "prev": 1500
+  }
+ ]
+}
