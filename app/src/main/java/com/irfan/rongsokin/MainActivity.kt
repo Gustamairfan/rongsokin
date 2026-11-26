@@ -19,6 +19,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -187,9 +188,10 @@ fun srcOf(p: Product): String {
     val s = if (p.source in SRC_LABEL) p.source else guessSource(p.name)
     return if (s == "FE" && guessSource(p.name) == "ST") "ST" else s
 }
+val EDITABLE = setOf("SENG", "PET", "HDPE", "PP", "LDPE", "PL", "KRD", "HVS", "KRN", "KCP")
 fun priceOf(p: Product, t: Map<String, Pair<Double, Double>>): Pair<Double, Double> {
     val s = srcOf(p)
-    if (s == "MANUAL") return p.market to (if (p.prev > 0) p.prev else p.market)
+    if (s == "MANUAL" || (s in EDITABLE && p.market > 0)) return p.market to (if (p.prev > 0) p.prev else p.market)
     return t[s] ?: (p.market to p.prev)
 }
 
@@ -400,32 +402,74 @@ fun QtyDialog(title: String, units: List<String>, confirm: String?, max: Double?
 }
 
 @Composable
-fun ProductDialog(initial: Product?, onDismiss: () -> Unit, onSave: (String, String, Long) -> Unit) {
+fun PickSourceDialog(current: String, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    var q by remember { mutableStateOf("") }
+    val list = SRC_LABEL.filter { it.value.contains(q.trim(), true) }
+    Dialog(onDismiss) {
+        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(Color.White)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Sumber harga pasar", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), placeholder = { Text("Cari jenis…") }, singleLine = true, shape = RoundedCornerShape(14.dp))
+                Spacer(Modifier.height(6.dp))
+                Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+                    if (list.isEmpty()) Text("Tidak ditemukan", color = Color.Gray, modifier = Modifier.padding(12.dp))
+                    list.forEach { (k, v) ->
+                        Text(v, Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (k == current) Color(0xFFD8F0E0) else Color.Transparent)
+                            .clickable { onPick(k) }.padding(horizontal = 12.dp, vertical = 12.dp),
+                            fontSize = 15.sp, fontWeight = if (k == current) FontWeight.Bold else FontWeight.Normal, color = INK)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ProductDialog(initial: Product?, table: Map<String, Pair<Double, Double>>, onDismiss: () -> Unit, onSave: (String, String, Long) -> Unit) {
     var n by remember { mutableStateOf(initial?.name ?: "") }
     var chosen by remember { mutableStateOf<String?>(initial?.let { srcOf(it) }) }
     var manual by remember { mutableStateOf(if ((initial?.market ?: 0.0) > 0) initial!!.market.toLong().toString() else "") }
+    var editing by remember { mutableStateOf((initial?.market ?: 0.0) > 0) }
     var open by remember { mutableStateOf(false) }
     val src = chosen ?: guessSource(n)
+    val canEdit = src in EDITABLE
+    val est = table[src]?.first
     Dlg(if (initial == null) "Tambah produk baru" else "Edit produk", onDismiss, "Simpan", "Batal", {
-        if (n.isNotBlank()) { onSave(n.trim(), src, manual.toLongOrNull() ?: 0L); onDismiss() }
+        if (n.isNotBlank()) {
+            val m = if (src == "MANUAL" || (canEdit && editing)) manual.toLongOrNull() ?: 0L else 0L
+            onSave(n.trim(), src, m); onDismiss()
+        }
     }) {
         OutlinedTextField(n, { n = it }, label = { Text("Nama produk") }, singleLine = true, shape = RoundedCornerShape(14.dp))
         Spacer(Modifier.height(12.dp))
-        ExposedDropdownMenuBox(open, { open = it }) {
-            OutlinedTextField(SRC_LABEL[src] ?: "", {}, Modifier.menuAnchor().fillMaxWidth(), readOnly = true, singleLine = true,
-                label = { Text("Sumber harga pasar") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(open) }, shape = RoundedCornerShape(14.dp))
-            ExposedDropdownMenu(open, { open = false }) {
-                SRC_LABEL.forEach { (k, v) -> DropdownMenuItem({ Text(v) }, { chosen = k; open = false }) }
-            }
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedTextField(SRC_LABEL[src] ?: "", {}, Modifier.fillMaxWidth(), readOnly = true, singleLine = true,
+                label = { Text("Sumber harga pasar") }, trailingIcon = { Text("▾", fontSize = 18.sp, color = Color.Gray) }, shape = RoundedCornerShape(14.dp))
+            Box(Modifier.matchParentSize().clickable { open = true })
         }
         Spacer(Modifier.height(6.dp))
-        if (src == "MANUAL") {
-            OutlinedTextField(manual, { manual = it.filter(Char::isDigit).take(12) }, singleLine = true, shape = RoundedCornerShape(14.dp),
-                label = { Text("Harga pasar manual (Rp/Kg)") }, visualTransformation = Thousands,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-            Text("Referensi: ${REFS["MANUAL"]}", fontSize = 11.sp, color = Color.Gray)
-        } else Text("Harga pasar terisi otomatis (perkiraan). Tidak cocok? Pilih “Lainnya (input manual)”.", fontSize = 11.sp, color = Color.Gray)
+        when {
+            src == "MANUAL" -> {
+                OutlinedTextField(manual, { manual = it.filter(Char::isDigit).take(12) }, singleLine = true, shape = RoundedCornerShape(14.dp),
+                    label = { Text("Harga pasar manual (Rp/Kg)") }, visualTransformation = Thousands,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                Text("Referensi: ${REFS["MANUAL"]}", fontSize = 11.sp, color = Color.Gray)
+            }
+            canEdit && !editing -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (est != null) "Perkiraan: ≈ Rp ${rp(est.toLong())}/kg" else "Perkiraan: -", fontSize = 12.sp, color = INK, modifier = Modifier.weight(1f))
+                TextButton({ editing = true; if (manual.isEmpty() && est != null) manual = est.toLong().toString() }) { Text("Edit harga") }
+            }
+            canEdit -> {
+                OutlinedTextField(manual, { manual = it.filter(Char::isDigit).take(12) }, singleLine = true, shape = RoundedCornerShape(14.dp),
+                    label = { Text("Harga pasar (Rp/Kg)") }, visualTransformation = Thousands,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                TextButton({ editing = false; manual = "" }) { Text("Kembali ke perkiraan") }
+            }
+            else -> Text("Harga pasar terisi otomatis dari bursa. Tidak cocok? Pilih “Lainnya (input manual)”.", fontSize = 11.sp, color = Color.Gray)
+        }
     }
+    if (open) PickSourceDialog(src, { open = false }) { chosen = it; editing = false; manual = ""; open = false }
 }
 
 @Composable
@@ -567,6 +611,7 @@ fun Home(user: FirebaseUser) {
     var listenErr by remember { mutableStateOf<String?>(null) }; val diag = remember { mutableStateListOf<String>() }; var diagBusy by remember { mutableStateOf(false) }
     var offline by remember { mutableStateOf(prefs.getBoolean("off", false)) }
     var online by remember { mutableStateOf(true) }
+    var pinId by remember { mutableStateOf<String?>(null) }; val listState = rememberLazyListState()
     var sort by remember { mutableStateOf(0) }; var query by remember { mutableStateOf<String?>(null) }
     var dialog by remember { mutableStateOf("") }; var sel by remember { mutableStateOf<Product?>(null) }
     var menu by remember { mutableStateOf(false) }; var sellStep by remember { mutableStateOf(0) }
@@ -574,6 +619,7 @@ fun Home(user: FirebaseUser) {
     var items by remember { mutableStateOf(loadItems(prefs)) }
     val table = buildTable(quotes, items)
     var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(pinId) { if (pinId != null) { delay(300); listState.scrollToItem(0) } }
     fun toast(s: String) = Toast.makeText(ctx, s, Toast.LENGTH_SHORT).show()
     fun upd(p: Product, vararg f: Pair<String, Any>) { col.document(p.id).update(mapOf(*f)) }
     val close = { dialog = ""; sellStep = 0 }
@@ -655,8 +701,8 @@ fun Home(user: FirebaseUser) {
         stuck -> "Ada data belum terkirim ke server. Periksa Firestore & rules di Firebase Console."
         busySync -> "Sedang sinkronisasi…"; else -> "Semua data sudah tersinkron" }
     val shown = products.filter { query.isNullOrBlank() || it.name.contains(query!!, true) }.let {
-        when (sort) { 1 -> it.sortedByDescending { p -> p.stock }; 2 -> it.sortedBy { p -> p.name.lowercase() }; else -> it.sortedByDescending { p -> priceOf(p, table).first } }
-    }
+        when (sort) { 1 -> it.sortedByDescending { p -> p.stock }; 2 -> it.sortedBy { p -> p.stock }; 3 -> it.sortedBy { p -> p.name.lowercase() }; else -> it.sortedByDescending { p -> priceOf(p, table).first } }
+    }.let { l -> if (pinId == null) l else l.sortedBy { x -> if (x.id == pinId) 0 else 1 } }
     val totalValue = products.sumOf { it.stock * it.sell }; val totalKg = products.sumOf { it.stock }
 
     Column(Modifier.fillMaxSize()) {
@@ -681,7 +727,7 @@ fun Home(user: FirebaseUser) {
                     }
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem({ Text("Filter") }, { menu = false; dialog = "filter" })
-                        DropdownMenuItem({ Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(offline, null); Text("Mode Offline") } }, { offline = !offline })
+                        DropdownMenuItem({ Text("Mode Offline") }, { offline = !offline }, trailingIcon = { Checkbox(offline, null) })
                         DropdownMenuItem({ Text("Sinkronisasi data", color = if (offline) Color.Gray else Color.Unspecified) }, {
                             menu = false
                             if (!offline && !diagBusy) { dialog = "sync"; scope.launch { runSync() } }
@@ -713,7 +759,7 @@ fun Home(user: FirebaseUser) {
             Spacer(Modifier.height(12.dp))
             Text(if (products.isEmpty()) "Belum ada produk" else "Produk tidak ditemukan", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = INK)
             Text("Tekan “＋ Produk” untuk mulai mencatat.", color = Color.Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
-        } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)) {
+        } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)) {
             itemsIndexed(shown, key = { _, p -> p.id }) { i, p ->
                 ProductCard(i + 1, p, priceOf(p, table),
                     onLong = { sel = p; dialog = "longpress" },
@@ -727,13 +773,16 @@ fun Home(user: FirebaseUser) {
 
     val p = sel
     when (dialog) {
-        "add" -> ProductDialog(null, close) { n, s, m -> col.add(Product(name = n, source = s, market = m.toDouble(), prev = m.toDouble(), created = System.currentTimeMillis())) }
-        "edit" -> ProductDialog(p, close) { n, s, m -> upd(p!!, "name" to n, "source" to s, "market" to m.toDouble(), "prev" to (if (m.toDouble() != p.market) p.market else p.prev)) }
+        "add" -> ProductDialog(null, table, close) { n, s, m ->
+            val ref = col.document(); pinId = ref.id
+            ref.set(Product(name = n, source = s, market = m.toDouble(), prev = m.toDouble(), created = System.currentTimeMillis()))
+        }
+        "edit" -> ProductDialog(p, table, close) { n, s, m -> upd(p!!, "name" to n, "source" to s, "market" to m.toDouble(), "prev" to (if (m.toDouble() != p.market) p.market else p.prev)) }
         "calc" -> Calculator(close)
         "profile" -> ProfileDialog(user, close)
         "filter" -> Dlg("Filter", close, "Tutup", null, close) {
-            listOf("Harga pasar tertinggi (default)", "Stok terbanyak", "Abjad A–Z").forEachIndexed { i, t ->
-                Row(Modifier.clickable { sort = i; close() }, verticalAlignment = Alignment.CenterVertically) { RadioButton(sort == i, { sort = i; close() }); Text(t) } }
+            listOf("Harga pasar tertinggi (default)", "Stok terbanyak", "Stok tersedikit", "Abjad A–Z").forEachIndexed { i, t ->
+                Row(Modifier.clickable { sort = i; pinId = null; close() }, verticalAlignment = Alignment.CenterVertically) { RadioButton(sort == i, { sort = i; pinId = null; close() }); Text(t) } }
         }
         "table" -> TradingTable(items, table, quoteTime, refreshing, {
             scope.launch { refreshing = true; toast(if (refresh()) "Harga diperbarui" else "Gagal, cek koneksi internet"); refreshing = false }
@@ -833,7 +882,7 @@ fun ProductCard(no: Int, p: Product, price: Pair<Double, Double>, onLong: () -> 
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(p.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = INK, maxLines = 1)
-                    Text(SRC_URL[srcOf(p)] ?: "input manual", fontSize = 10.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (srcOf(p) in EDITABLE && p.market > 0) "harga diedit manual" else SRC_URL[srcOf(p)] ?: "input manual", fontSize = 10.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (now > 0) Column(Modifier.clip(RoundedCornerShape(10.dp)).background(c.copy(alpha = .1f)).padding(horizontal = 8.dp, vertical = 3.dp), horizontalAlignment = Alignment.End) {
                     Text("Rp ${rp(now.toLong())}/kg", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = INK)
@@ -954,7 +1003,6 @@ suspend fun speedTest(): String = withContext(Dispatchers.IO) {
 
 @Composable
 fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, quoteTime: Long, refreshing: Boolean, onRefresh: () -> Unit, onClose: () -> Unit) {
-    var tab by remember { mutableStateOf("logam") }
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Card(Modifier.padding(10.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(Color.White)) {
             Column(Modifier.padding(12.dp)) {
@@ -963,9 +1011,7 @@ fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, q
                     TextButton(onRefresh, enabled = !refreshing) { Text(if (refreshing) "Memuat…" else "⟳ Perbarui", fontSize = 13.sp) }
                     Text("✕", Modifier.clip(CircleShape).clickable { onClose() }.padding(10.dp), fontSize = 20.sp)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("logam" to "Logam", "plastik" to "Plastik", "kertas" to "Kertas").forEach { (k, v) -> FilterChip(tab == k, { tab = k }, { Text(v) }) }
-                }
+                Text("Logam · harga bursa & estimasi", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth().background(Color(0xFFD8F0E0)).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     listOf("JENIS" to 1.1f, "BURSA/ACUAN PASAR" to 1.5f, "HARGA" to 1.1f, "PERUBAHAN" to 1f, "SATUAN" to .8f).forEach { (t, w) ->
@@ -973,7 +1019,7 @@ fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, q
                     }
                 }
                 Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
-                    items.filter { it.group == tab }.forEach { x ->
+                    items.filter { it.group == "logam" && (it.live || it.basis != null) }.forEach { x ->
                         val v = table[x.key]
                         val d = if (v != null && v.second > 0) (v.first - v.second) / v.second * 100 else null
                         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
