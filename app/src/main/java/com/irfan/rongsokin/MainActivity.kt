@@ -625,6 +625,7 @@ fun Home(user: FirebaseUser) {
                     }
                 }
             }
+            AdBar(online && !offline, Modifier.padding(top = 10.dp, end = 8.dp).clip(RoundedCornerShape(14.dp)))
             Spacer(Modifier.height(10.dp))
             Row(Modifier.padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HeaderAction("＋ Produk", Modifier.weight(1f)) { dialog = "add" }
@@ -651,7 +652,6 @@ fun Home(user: FirebaseUser) {
                     onSave = { f, v -> upd(p, f to v) })
             }
         }
-        AdBar(online && !offline)
     }
 
     val p = sel
@@ -825,7 +825,7 @@ fun bindAd(v: NativeAdView, a: NativeAd) {
 
 /** Slot iklan kecil di bawah layar. Tidak memakan ruang jika iklan belum/tidak termuat. */
 @Composable
-fun AdBar(enabled: Boolean) {
+fun AdBar(enabled: Boolean, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     var ad by remember { mutableStateOf<NativeAd?>(null) }
     val holder = remember { arrayOfNulls<NativeAd>(1) }
@@ -842,6 +842,6 @@ fun AdBar(enabled: Boolean) {
         }
     }
     ad?.let { a ->
-        AndroidView(factory = { c -> buildAdView(c) }, update = { v -> bindAd(v, a) }, modifier = Modifier.fillMaxWidth().background(Color.White))
+        AndroidView(factory = { c -> buildAdView(c) }, update = { v -> bindAd(v, a) }, modifier = modifier.fillMaxWidth().background(Color.White))
     }
 }
