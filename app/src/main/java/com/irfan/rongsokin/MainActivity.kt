@@ -617,6 +617,7 @@ fun Home(user: FirebaseUser) {
     var menu by remember { mutableStateOf(false) }; var sellStep by remember { mutableStateOf(0) }
     var quotes by remember { mutableStateOf(loadQ(prefs)) }; var quoteTime by remember { mutableStateOf(prefs.getLong("qt", 0L)) }
     var items by remember { mutableStateOf(loadItems(prefs)) }
+    var fx by remember { mutableStateOf(loadFx(prefs)) }
     val table = buildTable(quotes, items)
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(pinId) { if (pinId != null) { delay(300); listState.scrollToItem(0) } }
@@ -626,9 +627,11 @@ fun Home(user: FirebaseUser) {
 
     suspend fun refresh(): Boolean {
         val r = fetchQuotes()
+        val f = fetchFx()
         val j = withContext(Dispatchers.IO) { runCatching { httpGet(PRICES_URL) }.getOrNull() }
         if (j != null) runCatching { items = mergeItems(parseItems(j)); prefs.edit().putString("pj", j).apply() }
-        if (r == null && j == null) return false
+        if (r == null && j == null && f == null) return false
+        if (f != null) { fx = f; prefs.edit().putString("fx", f.entries.joinToString(";") { "${it.key}:${it.value}" }).apply() }
         if (r != null) {
             quotes = r
             prefs.edit().putString("q", r.entries.joinToString(";") { "${it.key}:${it.value.first}:${it.value.second}" }).apply()
@@ -784,7 +787,7 @@ fun Home(user: FirebaseUser) {
             listOf("Harga pasar tertinggi (default)", "Stok terbanyak", "Stok tersedikit", "Abjad A–Z").forEachIndexed { i, t ->
                 Row(Modifier.clickable { sort = i; pinId = null; close() }, verticalAlignment = Alignment.CenterVertically) { RadioButton(sort == i, { sort = i; pinId = null; close() }); Text(t) } }
         }
-        "table" -> TradingTable(items, table, quoteTime, refreshing, {
+        "table" -> TradingTable(items, table, fx, quoteTime, refreshing, {
             scope.launch { refreshing = true; toast(if (refresh()) "Harga diperbarui" else "Gagal, cek koneksi internet"); refreshing = false }
         }, close)
         "sources" -> Dlg("Sumber trading", close, "Tutup", null, close) {
@@ -1001,8 +1004,36 @@ suspend fun speedTest(): String = withContext(Dispatchers.IO) {
     } catch (e: Exception) { "kecepatan tidak terukur" }
 }
 
+data class Cur(val flag: String, val abbr: String, val code: String)
+val CURRENCIES = listOf(
+    Cur("🇺🇸", "USA", "USD"), Cur("🇪🇺", "EU", "EUR"), Cur("🇯🇵", "JPN", "JPY"), Cur("🇸🇬", "SGP", "SGD"), Cur("🇲🇾", "MYS", "MYR"),
+    Cur("🇦🇺", "AUS", "AUD"), Cur("🇬🇧", "GBR", "GBP"), Cur("🇨🇳", "CHN", "CNY"), Cur("🇭🇰", "HKG", "HKD"), Cur("🇸🇦", "SAU", "SAR"),
+    Cur("🇰🇷", "KOR", "KRW"), Cur("🇹🇭", "THA", "THB"), Cur("🇨🇭", "CHE", "CHF"), Cur("🇨🇦", "CAN", "CAD")
+)
+const val KURS_SPREAD = 0.005
+fun fmtIdr(v: Double): String = NumberFormat.getInstance(Locale("in", "ID")).apply {
+    val d = if (v >= 1000) 0 else 2; minimumFractionDigits = d; maximumFractionDigits = d
+}.format(v)
+fun loadFx(prefs: android.content.SharedPreferences): Map<String, Double> =
+    (prefs.getString("fx", "") ?: "").split(";").mapNotNull {
+        val a = it.split(":"); val v = a.getOrNull(1)?.toDoubleOrNull(); if (a.size == 2 && v != null) a[0] to v else null
+    }.toMap()
+/** kode mata uang -> harga tengah dalam IDR per 1 unit */
+suspend fun fetchFx(): Map<String, Double>? = withContext(Dispatchers.IO) {
+    runCatching {
+        val r = JSONObject(httpGet("https://open.er-api.com/v6/latest/USD")).getJSONObject("rates")
+        val idr = r.getDouble("IDR")
+        val out = mutableMapOf<String, Double>()
+        CURRENCIES.forEach { c -> if (r.has(c.code) && r.getDouble(c.code) > 0) out[c.code] = idr / r.getDouble(c.code) }
+        if (out.isEmpty()) null else out
+    }.getOrNull()
+}
+
 @Composable
-fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, quoteTime: Long, refreshing: Boolean, onRefresh: () -> Unit, onClose: () -> Unit) {
+fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, fx: Map<String, Double>, quoteTime: Long,
+                 refreshing: Boolean, onRefresh: () -> Unit, onClose: () -> Unit) {
+    var tab by remember { mutableStateOf("logam") }
+    val stamp = if (quoteTime > 0) " Diperbarui: " + SimpleDateFormat("dd MMM yyyy HH:mm", Locale("in", "ID")).format(Date(quoteTime)) else ""
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Card(Modifier.padding(10.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(Color.White)) {
             Column(Modifier.padding(12.dp)) {
@@ -1011,31 +1042,60 @@ fun TradingTable(items: List<PItem>, table: Map<String, Pair<Double, Double>>, q
                     TextButton(onRefresh, enabled = !refreshing) { Text(if (refreshing) "Memuat…" else "⟳ Perbarui", fontSize = 13.sp) }
                     Text("✕", Modifier.clip(CircleShape).clickable { onClose() }.padding(10.dp), fontSize = 20.sp)
                 }
-                Text("Logam · harga bursa & estimasi", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(start = 4.dp))
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth().background(Color(0xFFD8F0E0)).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    listOf("JENIS" to 1.1f, "BURSA/ACUAN PASAR" to 1.5f, "HARGA" to 1.1f, "PERUBAHAN" to 1f, "SATUAN" to .8f).forEach { (t, w) ->
-                        Text(t, Modifier.weight(w), fontSize = 9.sp, fontWeight = FontWeight.Bold, color = INK)
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(tab == "logam", { tab = "logam" }, { Text("Logam") })
+                    FilterChip(tab == "kurs", { tab = "kurs" }, { Text("KURS IDR") })
                 }
-                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
-                    items.filter { it.group == "logam" && (it.live || it.basis != null) }.forEach { x ->
-                        val v = table[x.key]
-                        val d = if (v != null && v.second > 0) (v.first - v.second) / v.second * 100 else null
-                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(x.name, Modifier.weight(1.1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = INK)
-                            Text(x.exchange, Modifier.weight(1.5f), fontSize = 9.sp, color = Color.Gray)
-                            Text(if (v == null) "-" else (if (!x.live) "≈ " else "") + rp(v.first.toLong()), Modifier.weight(1.1f), fontSize = 11.sp, color = INK)
-                            Text(if (d == null) "-" else "${if (d >= 0) "▲" else "▼"} ${"%.2f".format(Math.abs(d))}%", Modifier.weight(1f), fontSize = 10.sp,
-                                color = if (d == null) Color.Gray else if (d >= 0) GREEN else RED)
-                            Text("Rp/kg", Modifier.weight(.8f), fontSize = 10.sp, color = Color.Gray)
+                Spacer(Modifier.height(8.dp))
+                if (tab == "logam") {
+                    Row(Modifier.fillMaxWidth().background(Color(0xFFD8F0E0)).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        listOf("JENIS" to 1.1f, "BURSA/ACUAN PASAR" to 1.5f, "HARGA" to 1.1f, "PERUBAHAN" to 1f, "SATUAN" to .8f).forEach { (t, w) ->
+                            Text(t, Modifier.weight(w), fontSize = 9.sp, fontWeight = FontWeight.Bold, color = INK)
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFEEEEEE)))
                     }
+                    Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                        items.filter { it.group == "logam" && (it.live || it.basis != null) }.forEach { x ->
+                            val v = table[x.key]
+                            val d = if (v != null && v.second > 0) (v.first - v.second) / v.second * 100 else null
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(x.name, Modifier.weight(1.1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = INK)
+                                Text(x.exchange, Modifier.weight(1.5f), fontSize = 9.sp, color = Color.Gray)
+                                Text(if (v == null) "-" else (if (!x.live) "≈ " else "") + rp(v.first.toLong()), Modifier.weight(1.1f), fontSize = 11.sp, color = INK)
+                                Text(if (d == null) "-" else "${if (d >= 0) "▲" else "▼"} ${"%.2f".format(Math.abs(d))}%", Modifier.weight(1f), fontSize = 10.sp,
+                                    color = if (d == null) Color.Gray else if (d >= 0) GREEN else RED)
+                                Text("Rp/kg", Modifier.weight(.8f), fontSize = 10.sp, color = Color.Gray)
+                            }
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFEEEEEE)))
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("≈ = perkiraan/estimasi, bukan harga transaksi pengepul. Harga logam bursa dikonversi dengan kurs USD/IDR. Data diperbarui otomatis tiap 30 menit atau saat Anda menekan Perbarui.$stamp",
+                        fontSize = 10.sp, color = Color.Gray)
+                } else {
+                    Row(Modifier.fillMaxWidth().background(Color(0xFFD8F0E0)).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        listOf("MATA UANG" to 1.4f, "KODE" to .7f, "BELI (IDR)" to 1.1f, "JUAL (IDR)" to 1.1f).forEach { (t, w) ->
+                            Text(t, Modifier.weight(w), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = INK)
+                        }
+                    }
+                    Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                        if (fx.isEmpty()) Text("Belum ada data kurs. Tekan Perbarui (perlu internet).", Modifier.padding(12.dp), fontSize = 12.sp, color = Color.Gray)
+                        CURRENCIES.forEach { c ->
+                            val mid = fx[c.code]
+                            if (mid != null) {
+                                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("${c.flag} ${c.abbr}", Modifier.weight(1.4f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = INK)
+                                    Text(c.code, Modifier.weight(.7f), fontSize = 11.sp, color = Color.Gray)
+                                    Text(fmtIdr(mid * (1 - KURS_SPREAD)), Modifier.weight(1.1f), fontSize = 11.sp, color = INK)
+                                    Text(fmtIdr(mid * (1 + KURS_SPREAD)), Modifier.weight(1.1f), fontSize = 11.sp, color = INK)
+                                }
+                                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFEEEEEE)))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Kurs indikatif: kurs tengah pasar dengan selisih ±0,5% untuk beli/jual. Bukan kurs resmi bank atau money changer. Sumber: open.er-api.com (ExchangeRate-API).$stamp",
+                        fontSize = 10.sp, color = Color.Gray)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text("≈ = perkiraan/estimasi, bukan harga transaksi pengepul. Harga logam bursa dikonversi dengan kurs USD/IDR. Data diperbarui otomatis tiap 30 menit atau saat Anda menekan Perbarui." +
-                    (if (quoteTime > 0) " Diperbarui: " + SimpleDateFormat("dd MMM yyyy HH:mm", Locale("in", "ID")).format(Date(quoteTime)) else ""), fontSize = 10.sp, color = Color.Gray)
             }
         }
     }
